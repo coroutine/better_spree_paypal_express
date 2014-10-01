@@ -13,6 +13,7 @@ describe "PayPal", :js => true do
     })
     FactoryGirl.create(:shipping_method)
   end
+
   def fill_in_billing
     within("#billing") do
       fill_in "First Name", :with => "Test"
@@ -23,21 +24,54 @@ describe "PayPal", :js => true do
       select "United States of America", :from => "order_bill_address_attributes_country_id"
       select "Alabama", :from => "order_bill_address_attributes_state_id"
       fill_in "Zip", :with => "35005"
-      fill_in "Phone", :with => "555-AME-RICA"
+      fill_in "Phone", :with => "555-123-4567"
+    end
+  end
+
+  def fill_in_shipping
+    uncheck("order[use_billing]")
+    within("#shipping") do
+      fill_in "First Name", :with => "Test"
+      fill_in "Last Name", :with => "User"
+      fill_in "Street Address", :with => "2 User Lane"
+      # City, State and ZIP must all match for PayPal to be happy
+      fill_in "City", :with => "Adamsville"
+      select "United States of America", :from => "order_ship_address_attributes_country_id"
+      select "Alabama", :from => "order_ship_address_attributes_state_id"
+      fill_in "Zip", :with => "35005"
+      fill_in "Phone", :with => "555-123-4567"
     end
   end
 
   def switch_to_paypal_login
     # If you go through a payment once in the sandbox, it remembers your preferred setting.
     # It defaults to the *wrong* setting for the first time, so we need to have this method.
-    unless page.has_selector?("#login_email")
+    unless page.has_selector?("#login #email")
       find("#loadLogin").click
     end
   end
-  it "pays for an order successfully" do
+
+  def login_to_paypal
+    within("#loginForm") do
+      fill_in "Email", :with => "pp@spreecommerce.com"
+      fill_in "Password", :with => "thequickbrownfox"
+      click_button "Log in to PayPal"
+    end
+  end
+
+  def within_transaction_cart(&block)
+    find(".transactionDetails").click
+    within(".transctionCartDetails") { block.call }
+  end
+
+  def add_product_to_cart(product)
     visit spree.root_path
-    click_link 'iPad'
+    click_link product
     click_button 'Add To Cart'
+  end
+
+  it "pays for an order successfully" do
+    add_product_to_cart 'iPad'
     click_button 'Checkout'
     within("#guest_checkout") do
       fill_in "Email", :with => "test@example.com"
@@ -49,19 +83,44 @@ describe "PayPal", :js => true do
     click_button "Save and Continue"
     find("#paypal_button").click
     switch_to_paypal_login
-    fill_in "login_email", :with => "pp@spreecommerce.com"
-    fill_in "login_password", :with => "thequickbrownfox"
-    click_button "Log In"
-    find("#continue_abovefold").click   # Because there's TWO continue buttons.
+    login_to_paypal
+    click_button "Pay Now"
     page.should have_content("Your order has been processed successfully")
 
     Spree::Payment.last.source.transaction_id.should_not be_blank
   end
 
+  context "with 'Sole' solution type" do
+    before do
+      @gateway.preferred_solution = 'Sole'
+    end
+
+    it "passes user details to PayPal" do
+      add_product_to_cart('iPad')
+      click_button 'Checkout'
+      within("#guest_checkout") do
+        fill_in "Email", :with => "test@example.com"
+        click_button 'Continue'
+      end
+      fill_in_billing
+      click_button "Save and Continue"
+      # Delivery step doesn't require any action
+      click_button "Save and Continue"
+      find("#paypal_button").click
+
+      login_to_paypal
+      click_button "Pay Now"
+
+      page.should have_selector '[data-hook=order-bill-address] .fn', text: 'Test User'
+      page.should have_selector '[data-hook=order-bill-address] .adr', text: '1 User Lane'
+      page.should have_selector '[data-hook=order-bill-address] .adr', text: 'Adamsville AL 35005'
+      page.should have_selector '[data-hook=order-bill-address] .adr', text: 'United States'
+      page.should have_selector '[data-hook=order-bill-address] .tel', text: '555-123-4567'
+    end
+  end
+
   it "includes adjustments in PayPal summary" do
-    visit spree.root_path
-    click_link 'iPad'
-    click_button 'Add To Cart'
+    add_product_to_cart('iPad')
     # TODO: Is there a better way to find this current order?
     order = Spree::Order.last
     order.adjustments.create!(:amount => -5, :label => "$5 off")
@@ -81,7 +140,22 @@ describe "PayPal", :js => true do
     # Delivery step doesn't require any action
     click_button "Save and Continue"
     find("#paypal_button").click
-    within("#miniCart") do
+
+    within_transaction_cart do
+      page.should have_content("$5 off")
+      page.should have_content("$10 on")
+    end
+
+    login_to_paypal
+
+    within_transaction_cart do
+      page.should have_content("$5 off")
+      page.should have_content("$10 on")
+    end
+
+    click_button "Pay Now"
+
+    within("[data-hook=order_details_adjustments]") do
       page.should have_content("$5 off")
       page.should have_content("$10 on")
     end
@@ -96,10 +170,7 @@ describe "PayPal", :js => true do
     end
 
     it "includes line item adjustments in PayPal summary" do
-
-      visit spree.root_path
-      click_link 'iPad'
-      click_button 'Add To Cart'
+      add_product_to_cart('iPad')
       # TODO: Is there a better way to find this current order?
       order = Spree::Order.last
       order.line_item_adjustments.count.should == 1
@@ -118,7 +189,15 @@ describe "PayPal", :js => true do
       # Delivery step doesn't require any action
       click_button "Save and Continue"
       find("#paypal_button").click
-      within("#miniCart") do
+
+      within_transaction_cart do
+        page.should have_content("10% off")
+      end
+
+      login_to_paypal
+      click_button "Pay Now"
+
+      within("[data-hook=order_details_price_adjustments]") do
         page.should have_content("10% off")
       end
     end
@@ -129,13 +208,8 @@ describe "PayPal", :js => true do
     let!(:product2) { FactoryGirl.create(:product, :name => 'iPod') }
 
     specify do
-      visit spree.root_path
-      click_link 'iPad'
-      click_button 'Add To Cart'
-
-      visit spree.root_path
-      click_link 'iPod'
-      click_button 'Add To Cart'
+      add_product_to_cart('iPad')
+      add_product_to_cart('iPod')
 
       # TODO: Is there a better way to find this current order?
       order = Spree::Order.last
@@ -150,9 +224,24 @@ describe "PayPal", :js => true do
       # Delivery step doesn't require any action
       click_button "Save and Continue"
       find("#paypal_button").click
-      within("#miniCart") do
+
+      within_transaction_cart do
         page.should have_content('iPad')
         page.should_not have_content('iPod')
+      end
+
+      login_to_paypal
+
+      within_transaction_cart do
+        page.should have_content('iPad')
+        page.should_not have_content('iPod')
+      end
+
+      click_button "Pay Now"
+
+      within("#line-items") do
+        page.should have_content('iPad')
+        page.should have_content('iPod')
       end
     end
   end
@@ -166,9 +255,7 @@ describe "PayPal", :js => true do
     end
 
     specify do
-      visit spree.root_path
-      click_link 'iPad'
-      click_button 'Add To Cart'
+      add_product_to_cart('iPad')
       # TODO: Is there a better way to find this current order?
       order = Spree::Order.last
       order.adjustments.create!(:amount => -order.line_items.last.price, :label => "FREE iPad ZOMG!")
@@ -182,9 +269,199 @@ describe "PayPal", :js => true do
       # Delivery step doesn't require any action
       click_button "Save and Continue"
       find("#paypal_button").click
-      within("#miniCart") do
-        page.should have_content('Current purchase')
+
+      login_to_paypal
+
+      click_button "Pay Now"
+
+      within("[data-hook=order_details_adjustments]") do
+        page.should have_content('FREE iPad ZOMG!')
       end
+    end
+  end
+
+  shared_examples_for :no_shipping do
+    it "displays the shipping address on file on the paypal page" do
+      add_product_to_cart('iPad')
+      click_button 'Checkout'
+      within('#guest_checkout') do
+        fill_in "Email", with: "test@example.com"
+        click_button 'Continue'
+      end
+      fill_in_billing
+      fill_in_shipping
+
+      click_button "Save and Continue"
+      # Delivery step doesn't require any action
+      click_button "Save and Continue"
+
+      find("#paypal_button").click
+
+      login_to_paypal
+
+      within("#shippingAddress") do
+        page.should have_content("Ship to")
+      end
+
+      click_button "Pay Now"
+
+      page.should have_content("Your order has been processed successfully")
+    end
+  end
+
+  context "displays the shipping address on the paypal page" do
+    before do
+      @gateway.preferred_no_shipping = '0'
+      @gateway.save
+    end
+
+    it_behaves_like :no_shipping
+  end
+
+  shared_examples_for :no_shipping_displayed do
+    it "does not show the address by default" do
+      add_product_to_cart('iPad')
+      click_button 'Checkout'
+      within('#guest_checkout') do
+        fill_in "Email", with: "test@example.com"
+        click_button 'Continue'
+      end
+      fill_in_billing
+      fill_in_shipping
+
+      click_button "Save and Continue"
+      # Delivery step doesn't require any action
+      click_button "Save and Continue"
+
+      find("#paypal_button").click
+
+      login_to_paypal
+
+      page.should have_no_content("Ship To")
+
+      click_button "Pay Now"
+
+      page.should have_content("Your order has been processed successfully")
+    end
+  end
+
+  context "requiring confirmed shipping address" do
+    before do
+      @gateway.preferred_req_confirmed_address = '1'
+      @gateway.save
+    end
+
+    it_behaves_like :no_shipping_displayed
+
+    it "overrides the shipping address on the order with the confirmed one" do
+      maryland = FactoryGirl.create(:state, name: "Maryland", abbr: "MD")
+
+      add_product_to_cart('iPad')
+      click_button 'Checkout'
+      within('#guest_checkout') do
+        fill_in "Email", with: "test@example.com"
+        click_button 'Continue'
+      end
+      fill_in_billing
+      fill_in_shipping
+
+      click_button "Save and Continue"
+      # Delivery step doesn't require any action
+      click_button "Save and Continue"
+
+      find("#paypal_button").click
+
+      login_to_paypal
+
+      page.should have_no_content("Ship To")
+
+      click_button "Pay Now"
+
+      page.should have_content("Your order has been processed successfully")
+
+      order = Spree::Order.last
+      express_checkout = order.payments.last.source
+
+      address = express_checkout.address
+      address.should_not be_nil
+
+      address.address1.should eq("Suite 510")
+      address.address2.should eq("7735 Old Georgetown Road")
+      address.city.should eq("Bethesda")
+      address.state.should eq(maryland)
+    end
+  end
+
+  context "displays the shipping address on the paypal page when none is passed" do
+    before do
+      @gateway.preferred_no_shipping = '2'
+      @gateway.save
+    end
+
+    it_behaves_like :no_shipping
+  end
+
+  context "default no shipping option" do
+    it_behaves_like :no_shipping_displayed
+  end
+
+  context "shipping address override" do
+    before do
+      @gateway.preferred_no_shipping = '0'
+      @gateway.preferred_address_override = '1'
+      @gateway.save
+    end
+
+    it "shipping address from order" do
+      add_product_to_cart('iPad')
+      click_button 'Checkout'
+      within('#guest_checkout') do
+        fill_in "Email", with: "test@example.com"
+        click_button 'Continue'
+      end
+      fill_in_billing
+      fill_in_shipping
+
+      click_button "Save and Continue"
+      # Delivery step doesn't require any action
+      click_button "Save and Continue"
+
+      find("#paypal_button").click
+
+      login_to_paypal
+
+      within("#shippingAddress") do
+        page.should have_content("2 User Lane")
+      end
+      click_button "Pay Now"
+
+      page.should have_content("Your order has been processed successfully")
+    end
+
+    it "billing address from order" do
+      add_product_to_cart('iPad')
+      click_button 'Checkout'
+      within('#guest_checkout') do
+        fill_in "Email", with: "test@example.com"
+        click_button 'Continue'
+      end
+      fill_in_billing
+
+      click_button "Save and Continue"
+      # Delivery step doesn't require any action
+      click_button "Save and Continue"
+
+      find("#paypal_button").click
+
+      login_to_paypal
+
+      within("#shippingAddress") do
+        page.should have_content("1 User Lane")
+      end
+
+      click_button "Pay Now"
+
+      page.should have_content("Your order has been processed successfully")
     end
   end
 
@@ -195,9 +472,7 @@ describe "PayPal", :js => true do
     end
 
     specify do
-      visit spree.root_path
-      click_link 'iPad'
-      click_button 'Add To Cart'
+      add_product_to_cart('iPad')
       click_button 'Checkout'
       within("#guest_checkout") do
         fill_in "Email", :with => "test@example.com"
@@ -217,9 +492,7 @@ describe "PayPal", :js => true do
 
     context "refunding payments" do
       before do
-        visit spree.root_path
-        click_link 'iPad'
-        click_button 'Add To Cart'
+        add_product_to_cart('iPad')
         click_button 'Checkout'
         within("#guest_checkout") do
           fill_in "Email", :with => "test@example.com"
@@ -231,10 +504,8 @@ describe "PayPal", :js => true do
         click_button "Save and Continue"
         find("#paypal_button").click
         switch_to_paypal_login
-        fill_in "login_email", :with => "pp@spreecommerce.com"
-        fill_in "login_password", :with => "thequickbrownfox"
-        click_button "Log In"
-        find("#continue_abovefold").click   # Because there's TWO continue buttons.
+        login_to_paypal
+        click_button("Pay Now")
         page.should have_content("Your order has been processed successfully")
 
         visit '/admin'
@@ -249,11 +520,11 @@ describe "PayPal", :js => true do
         page.should have_content("PayPal refund successful")
 
         payment = Spree::Payment.last
-        source = payment.source.source
-        source.refund_transaction_id.should_not be_blank
-        source.refunded_at.should_not be_blank
-        source.state.should eql("refunded")
-        source.refund_type.should eql("Full")
+        paypal_checkout = payment.source.source
+        paypal_checkout.refund_transaction_id.should_not be_blank
+        paypal_checkout.refunded_at.should_not be_blank
+        paypal_checkout.state.should eql("refunded")
+        paypal_checkout.refund_type.should eql("Full")
 
         # regression test for #82
         within("table") do
