@@ -93,7 +93,7 @@ describe "PayPal", :js => true do
       calculator = Spree::Calculator::FlatPercentItemTotal.new(preferred_flat_percent: 10)
       action = Spree::Promotion::Actions::CreateItemAdjustments.create(:calculator => calculator)
       promotion.actions << action
-    end    
+    end
 
     it "includes line item adjustments in PayPal summary" do
 
@@ -249,7 +249,7 @@ describe "PayPal", :js => true do
         page.should have_content("PayPal refund successful")
 
         payment = Spree::Payment.last
-        source = payment.source
+        source = payment.source.source
         source.refund_transaction_id.should_not be_blank
         source.refunded_at.should_not be_blank
         source.state.should eql("refunded")
