@@ -23,7 +23,7 @@ describe "PayPal", :js => true do
       select "United States of America", :from => "order_bill_address_attributes_country_id"
       select "Alabama", :from => "order_bill_address_attributes_state_id"
       fill_in "Zip", :with => "35005"
-      fill_in "Phone", :with => "555-123-4567"
+      fill_in "Phone", :with => "555-AME-RICA"
     end
   end
 
@@ -34,20 +34,6 @@ describe "PayPal", :js => true do
       find("#loadLogin").click
     end
   end
-
-  def login_to_paypal
-    within("#loginForm") do
-      fill_in "Email", :with => "pp@spreecommerce.com"
-      fill_in "Password", :with => "thequickbrownfox"
-      click_button "Log in to PayPal"
-    end
-  end
-
-  def within_transaction_cart(&block)
-    find(".transactionDetails").click
-    within(".transctionCartDetails") { block.call }
-  end
-
   it "pays for an order successfully" do
     visit spree.root_path
     click_link 'iPad'
@@ -63,42 +49,13 @@ describe "PayPal", :js => true do
     click_button "Save and Continue"
     find("#paypal_button").click
     switch_to_paypal_login
-    login_to_paypal
-    click_button "Pay Now"
+    fill_in "login_email", :with => "pp@spreecommerce.com"
+    fill_in "login_password", :with => "thequickbrownfox"
+    click_button "Log In"
+    find("#continue_abovefold").click   # Because there's TWO continue buttons.
     page.should have_content("Your order has been processed successfully")
 
     Spree::Payment.last.source.transaction_id.should_not be_blank
-  end
-
-  context "with 'Sole' solution type" do
-    before do
-      @gateway.preferred_solution = 'Sole'
-    end
-
-    it "passes user details to PayPal" do
-      visit spree.root_path
-      click_link 'iPad'
-      click_button 'Add To Cart'
-      click_button 'Checkout'
-      within("#guest_checkout") do
-        fill_in "Email", :with => "test@example.com"
-        click_button 'Continue'
-      end
-      fill_in_billing
-      click_button "Save and Continue"
-      # Delivery step doesn't require any action
-      click_button "Save and Continue"
-      find("#paypal_button").click
-
-      login_to_paypal
-      click_button "Pay Now"
-
-      page.should have_selector '[data-hook=order-bill-address] .fn', text: 'Test User'
-      page.should have_selector '[data-hook=order-bill-address] .adr', text: '1 User Lane'
-      page.should have_selector '[data-hook=order-bill-address] .adr', text: 'Adamsville AL 35005'
-      page.should have_selector '[data-hook=order-bill-address] .adr', text: 'United States'
-      page.should have_selector '[data-hook=order-bill-address] .tel', text: '555-123-4567'
-    end
   end
 
   it "includes adjustments in PayPal summary" do
@@ -124,22 +81,7 @@ describe "PayPal", :js => true do
     # Delivery step doesn't require any action
     click_button "Save and Continue"
     find("#paypal_button").click
-
-    within_transaction_cart do
-      page.should have_content("$5 off")
-      page.should have_content("$10 on")
-    end
-
-    login_to_paypal
-
-    within_transaction_cart do
-      page.should have_content("$5 off")
-      page.should have_content("$10 on")
-    end
-
-    click_button "Pay Now"
-
-    within("[data-hook=order_details_adjustments]") do
+    within("#miniCart") do
       page.should have_content("$5 off")
       page.should have_content("$10 on")
     end
@@ -151,7 +93,7 @@ describe "PayPal", :js => true do
       calculator = Spree::Calculator::FlatPercentItemTotal.new(preferred_flat_percent: 10)
       action = Spree::Promotion::Actions::CreateItemAdjustments.create(:calculator => calculator)
       promotion.actions << action
-    end
+    end    
 
     it "includes line item adjustments in PayPal summary" do
 
@@ -208,24 +150,9 @@ describe "PayPal", :js => true do
       # Delivery step doesn't require any action
       click_button "Save and Continue"
       find("#paypal_button").click
-
-      within_transaction_cart do
+      within("#miniCart") do
         page.should have_content('iPad')
         page.should_not have_content('iPod')
-      end
-
-      login_to_paypal
-
-      within_transaction_cart do
-        page.should have_content('iPad')
-        page.should_not have_content('iPod')
-      end
-
-      click_button "Pay Now"
-
-      within("#line-items") do
-        page.should have_content('iPad')
-        page.should have_content('iPod')
       end
     end
   end
@@ -255,13 +182,8 @@ describe "PayPal", :js => true do
       # Delivery step doesn't require any action
       click_button "Save and Continue"
       find("#paypal_button").click
-
-      login_to_paypal
-
-      click_button "Pay Now"
-
-      within("[data-hook=order_details_adjustments]") do
-        page.should have_content('FREE iPad ZOMG!')
+      within("#miniCart") do
+        page.should have_content('Current purchase')
       end
     end
   end
@@ -309,8 +231,10 @@ describe "PayPal", :js => true do
         click_button "Save and Continue"
         find("#paypal_button").click
         switch_to_paypal_login
-        login_to_paypal
-        click_button("Pay Now")
+        fill_in "login_email", :with => "pp@spreecommerce.com"
+        fill_in "login_password", :with => "thequickbrownfox"
+        click_button "Log In"
+        find("#continue_abovefold").click   # Because there's TWO continue buttons.
         page.should have_content("Your order has been processed successfully")
 
         visit '/admin'
@@ -325,11 +249,11 @@ describe "PayPal", :js => true do
         page.should have_content("PayPal refund successful")
 
         payment = Spree::Payment.last
-        paypal_checkout = payment.source.source
-        paypal_checkout.refund_transaction_id.should_not be_blank
-        paypal_checkout.refunded_at.should_not be_blank
-        paypal_checkout.state.should eql("refunded")
-        paypal_checkout.refund_type.should eql("Full")
+        source = payment.source
+        source.refund_transaction_id.should_not be_blank
+        source.refunded_at.should_not be_blank
+        source.state.should eql("refunded")
+        source.refund_type.should eql("Full")
 
         # regression test for #82
         within("table") do
